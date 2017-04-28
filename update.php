@@ -56,6 +56,50 @@ function getTeam($position, $match, $tournament, $matches, $teams){
     }
 }
 
+function getMatchType($bracket, $match){
+    //Vars
+    $translate = [
+        'single_elim' => 'Single Elimination',
+        'standard' => 'Best of 1',
+    ];
+    $default = [
+        'maxGames' => 1,
+        'label' => 'NO MATCH TYPE',
+    ];
+
+    //No type: return default
+    if(isset($match['matchType'])){
+        $mType = $match['matchType'];
+    }
+    else if(isset($bracket['matchType'])){
+        $mType = $bracket['matchType'];
+    }
+    else if(isset($bracket['inheritableMatchScoringStrategy'])){
+        $mType = $bracket['inheritableMatchScoringStrategy'];
+    }
+    else{
+        return $default;
+    }
+
+    //Compute maximum number of games
+    if($mType['identifier'] == 'best_of'){
+        return [
+            'maxGames' => $mType['options']['best_of'],
+            'label' => 'Best of ' . $mType['options']['best_of'],
+        ];
+    }
+    else if(isset($translate[$mType['identifier']])){
+        $default['label'] =  $translate[$mType['identifier']];
+    }
+    else{
+        //Do nothing
+//        print_r($mType);
+//        print_r($match);
+    }
+
+    return $default;
+}
+
 //Get Videos
 $allVideos = collect(getJson('videos', $urlVideos)['videos'])->groupBy('game')->toArray();
 
@@ -92,7 +136,7 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
     $events = [];
     foreach($scheduleItems as $scheduleItem){
 
-        if(!isset($scheduleItem['match'])){
+        if( ! isset($scheduleItem['match'])){
             //ignore non matches
             continue;
         }
@@ -101,11 +145,12 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
         $tournament = $tournaments[$scheduleItem['tournament']];
         $bracket = $brackets[$scheduleItem['bracket']];
         $match = $matches[$scheduleItem['match']];
+        $matchType = getMatchType($bracket, $match);
         $tags = $scheduleItem['tags'];
         $team1 = getTeam(1, $match, $tournament, $matches, $teams);
         $team2 = getTeam(2, $match, $tournament, $matches, $teams);
         $dateStart = (new \Carbon\Carbon($scheduleItem['scheduledTime']))->toAtomString();
-        $dateEnd = (new \Carbon\Carbon($scheduleItem['scheduledTime']))->addHours(1)->toAtomString();
+        $dateEnd = (new \Carbon\Carbon($scheduleItem['scheduledTime']))->addHours($matchType['maxGames'])->toAtomString();
         $uid = str_replace('-','v', $match['id']);
 
         //If the match is at most a month old, we will no longer update it
@@ -150,15 +195,13 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
         //Work on Summary
         $description = implode('<br/>', [
             $tournament['description'],
+            $matchType['label'],
             @ucwords(trim("{$tags['blockPrefix']} {$tags['blockLabel']}")),// {$tags['subBlockPrefix']} {$tags['subBlockLabel']}")),
             "{$team1['name']} vs {$team2['name']}",
             count($videos) ? '<br/><b>VODS:</b><br/>' . implode('<br/>', $videos) : '',
         ]);
 
-
-//        print_r($team1);
-//        $url = $tournament['langu']
-
+        //Register in our Events array
         $events[$uid] = new Google_Service_Calendar_Event(array(
             'id' => $uid,
             'summary' => "[$tournamentShort] $labelPrefix{$team1['acronym']} vs {$team2['acronym']}",
@@ -172,13 +215,11 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
 
         ));
 
-
-
         //Summary line for debug
-        echo "{$league['id']} - {$events[$uid]['start']['dateTime']}: {$events[$uid]['summary']} \t\t\t$uid\n";//$description\n";
+        echo "{$league['id']} - {$events[$uid]['start']['dateTime']}: {$events[$uid]['summary']} \t\t\t$uid\n$description\n\n";
     }
 
-    //Uncomment to prevent updating calendar
+    //DEBUG: Uncomment to prevent updating calendar
 //    continue;
 
     //Retrieve list of existing Events
@@ -193,7 +234,7 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
         }
     }
 
-//Batch insert / update
+    //Batch insert / update
     $batch = new Google_Http_Batch($client);
     foreach($events as $event){
         if(in_array($event['id'], $existingEvents)){
@@ -215,7 +256,3 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
 
     sleep(5);
 }
-
-
-//print_r(array_keys($calEvents));
-//print_r($calEvents);
