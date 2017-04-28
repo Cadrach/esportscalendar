@@ -5,6 +5,7 @@ require_once __DIR__ . '/vendor/autoload.php';
 require_once 'connect.php';
 
 $urlExternal = "http://www.lolesports.com/en_US/";
+$urlVideos = "http://api.lolesports.com/api/v2/videos";
 $urlMatch = "http://api.lolesports.com/api/v2/highlanderMatchDetails?tournamentId=%s&matchId=%s";
 $urlLeague = "http://api.lolesports.com/api/v1/leagues/%s";
 $urlSchedule = "http://api.lolesports.com/api/v1/scheduleItems?leagueId=%s";
@@ -30,8 +31,14 @@ function getJson($filename, $url){
 
 function getTeam($position, $match, $tournament, $matches, $teams){
     $input = $match['input'][$position-1];
-    if(isset($input['roster'])){
+    if(isset($input['roster']) && isset($tournament['rosters'][$input['roster']]['team']) && isset($teams[$tournament['rosters'][$input['roster']]['team']])){
         return $teams[$tournament['rosters'][$input['roster']]['team']];
+    }
+    else if(isset($input['roster']) && isset($tournament['rosters'][$input['roster']])){
+        return [
+            'acronym' => $tournament['rosters'][$input['roster']]['name'],
+            'name' => $tournament['rosters'][$input['roster']]['name'],
+        ];
     }
     else if(isset($input['match'])){
         return [
@@ -49,9 +56,13 @@ function getTeam($position, $match, $tournament, $matches, $teams){
     }
 }
 
+//Get Videos
+$allVideos = collect(getJson('videos', $urlVideos)['videos'])->groupBy('game')->toArray();
+
 //Run for all Leagues
-$idLeagueStart = 2;
-$idLeagueEnd = 2;
+$ignoreOlderThandMonthes = 1;
+$idLeagueStart = 1;
+$idLeagueEnd = 50;
 for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
     //Get files
     $dataLeague = getJson("league$idLeague", sprintf($urlLeague, $idLeague));
@@ -61,6 +72,7 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
     $league = $dataLeague['leagues'][0];
     $teams = collect($dataSchedule['teams'])->keyBy('id')->toArray();
     $tournaments = collect($dataSchedule['highlanderTournaments'])->keyBy('id')->toArray();
+    $scheduleItems = collect($dataSchedule['scheduleItems'])->sortBy('scheduledTime', SORT_REGULAR, true)->toArray();
     $brackets = [];
     $matches = [];
     foreach($tournaments as $t){
@@ -74,11 +86,11 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
 
     //League short name
     $tournamentShort = explode('-', strtoupper($league['slug']));
-    $tournamentShort = isset($tournamentShort[1]) && in_array($tournamentShort[1], ['CS', 'LCS']) ? implode(' ', $tournamentShort) : $tournamentShort[0];
+    $tournamentShort = isset($tournamentShort[1]) && in_array($tournamentShort[1], ['CS', 'LCS', 'STAR']) ? implode(' ', $tournamentShort) : $tournamentShort[0];
 
-//Read matches
+    //Read matches
     $events = [];
-    foreach($dataSchedule['scheduleItems'] as $scheduleItem){
+    foreach($scheduleItems as $scheduleItem){
 
         if(!isset($scheduleItem['match'])){
             //ignore non matches
@@ -97,8 +109,9 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
         $uid = str_replace('-','v', $match['id']);
 
         //If the match is at most a month old, we will no longer update it
-        if((new \Carbon\Carbon($dateStart))->addMonth()->isPast()){
-            continue;
+        if($ignoreOlderThandMonthes>0 && (new \Carbon\Carbon($dateStart))->addMonths($ignoreOlderThandMonthes)->isPast()){
+            //Since we are sorted by date, we can exit the loop right away
+            break;
         }
 
         //
@@ -109,7 +122,7 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
         //Block label
         $labelPrefix = '';
         if( isset($scheduleItem['tags']['blockLabel']) && ! is_numeric($scheduleItem['tags']['blockLabel'])){
-            $labelPrefix = ucwords($scheduleItem['tags']['blockLabel'] . ' ');
+            $labelPrefix = ucwords($scheduleItem['tags']['blockLabel'] . ': ');
         }
 
         //If our event already exists
@@ -117,15 +130,21 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
             $uid.= 'vvv' . (new \Carbon\Carbon($scheduleItem['scheduledTime']))->format('Ymdhis');
         }
 
-        //
+        //For matches which are more than 1 week old, we update the VODs
         $videos = [];
-        $dataMatch = getJson('match' . $match['id'], sprintf($urlMatch, $tournament['id'], $match['id']));
-        if(count($dataMatch['videos'])){
-            $games = $match['games'];
-            foreach($dataMatch['videos'] as $video){
-                $videos[] = "<a href='{$video['source']}'>{$games[$video['game']]['name']} ({$video['locale']})</a>";
+        if((new \Carbon\Carbon($dateStart))->addWeek()->isPast()){
+            foreach($match['games'] as $game){
+                if(isset($allVideos[$game['id']])){
+                    $string = $game['name'].': ';
+                    $gameVideos = [];
+                    foreach($allVideos[$game['id']] as $video){
+                        $gameVideos[$video['locale']] = "<a href='{$video['source']}'>".$video['locale']."</a>";
+                    }
+                    ksort($gameVideos); //sorting to have language in same orders
+                    $videos[$game['name']] = $string . implode(' / ', $gameVideos);
+                }
             }
-//            print_r($dataMatch['videos']);
+            ksort($videos); //sorting to get games in the correct order
         }
 
         //Work on Summary
@@ -156,13 +175,13 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
 
 
         //Summary line for debug
-        echo "{$league['id']} - {$events[$uid]['start']['dateTime']}: {$events[$uid]['summary']} \t\t\t$uid\n$description\n";
+        echo "{$league['id']} - {$events[$uid]['start']['dateTime']}: {$events[$uid]['summary']} \t\t\t$uid\n";//$description\n";
     }
 
     //Uncomment to prevent updating calendar
 //    continue;
 
-//Retrieve list of existing Events
+    //Retrieve list of existing Events
     $existingEvents = [];
     $batch = new Google_Http_Batch($client);
     foreach($events as $e){
