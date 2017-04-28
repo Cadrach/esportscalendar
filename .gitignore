@@ -1,0 +1,4 @@
+*.inc.php
+.idea
+vendor
+credentials/*
