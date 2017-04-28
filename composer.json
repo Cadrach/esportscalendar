@@ -1,6 +1,7 @@
 {
     "require": {
-        "google/apiclient": "2.0",
-        "nesbot/carbon": "^1.22"
+        "google/apiclient": "^2.0",
+        "nesbot/carbon": "^1.22",
+        "illuminate/support": "^5.2"
     }
 }
