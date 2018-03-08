@@ -1,8 +1,12 @@
 <?php
 
+ini_set('memory_limit', '2G');
+
 echo '<pre>';
 require_once __DIR__ . '/vendor/autoload.php';
 require_once 'connect.php';
+
+$ts = microtime(true);
 
 $urlExternal = "http://www.lolesports.com/en_US/";
 $urlVideos = "http://api.lolesports.com/api/v2/videos";
@@ -19,7 +23,8 @@ function getJson($filename, $url){
     set_time_limit(300);
 
     $file = __DIR__ . "/json/$filename.json";
-    if(file_exists($file)){
+    if(0 && file_exists($file)){
+//    if(file_exists($file)){
         $fileContent = file_get_contents($file);
     }
     else{
@@ -98,6 +103,25 @@ function getMatchType($bracket, $match){
     }
 
     return $default;
+}
+
+function batchExecute($batch){
+    $shouldReUpdate = false;
+    foreach($batch->execute() as $line){
+        if($line instanceof Google_Service_Exception){
+            if($line->getCode() == 403){
+                die();
+            }
+            else if($line->getCode() == 409){
+                //We must re-update
+                $shouldReUpdate = true;
+            }
+            else{
+                echo $line->getMessage() . "\n";
+            }
+        }
+    }
+    return $shouldReUpdate;
 }
 
 //Get Videos
@@ -216,28 +240,59 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
         ));
 
         //Summary line for debug
-        echo "{$league['id']} - {$events[$uid]['start']['dateTime']}: {$events[$uid]['summary']} \t\t\t$uid\n$description\n\n";
+        echo "{$league['id']} - {$events[$uid]['start']['dateTime']}: {$events[$uid]['summary']}\n";// \t\t\t$uid\n$description\n\n";
     }
 
     //DEBUG: Uncomment to prevent updating calendar
-//    continue;
+    //    continue;
 
-    //Retrieve list of existing Events
-    $existingEvents = [];
-    $batch = new Google_Http_Batch($client);
-    foreach($events as $e){
-        $batch->add($service->events->get(CALENDAR_ID, $e['id']));
+    //Exit if nothing to update
+    if( ! count($events)){
+        continue;
     }
-    foreach($batch->execute() as $e){
-        if($e instanceof Google_Service_Calendar_Event){
-            $existingEvents[] = $e->id;
+
+
+    //EVENTS CLEAN UP
+
+    //Looking for date to start looking for
+    $earliestDate = \Carbon\Carbon::today()->subMonths($ignoreOlderThandMonthes);
+
+    //We will look for all events from $earliestDate to the future
+    $client->setUseBatch(false);
+    $foundUids = [];
+    $params = [
+        'q' => "[$tournamentShort]",
+        'timeMin' => $earliestDate->toAtomString(),
+    ];
+    do{
+        $results = $service->events->listEvents(CALENDAR_ID, $params);
+        foreach($results->getItems() as $event){
+            $foundUids[] = $event->id;
         }
+        $pageToken = $results->getNextPageToken();
+        if($pageToken){
+            $params = ['pageToken' => $pageToken];
+        }
+        else{
+            break;
+        }
+    }while(true);
+    $client->setUseBatch(true);
+
+    //Diff to determine what is to delete
+    $toDelete = array_diff($foundUids, array_keys($events));
+    if(count($toDelete)){
+        $batch = new Google_Http_Batch($client);
+        foreach($toDelete as $uid){
+            $batch->add($service->events->delete(CALENDAR_ID, $uid));
+        }
+        $batch->execute();
     }
 
     //Batch insert / update
     $batch = new Google_Http_Batch($client);
     foreach($events as $event){
-        if(in_array($event['id'], $existingEvents)){
+        if(in_array($event['id'], $foundUids)){
             $batch->add($service->events->update(CALENDAR_ID, $event['id'], $event));
         }
         else {
@@ -245,14 +300,19 @@ for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
         }
     }
 
-    foreach($batch->execute() as $line){
-        if($line instanceof Google_Service_Exception){
-            echo $line->getMessage() . "\n";
-            if($line->getCode() == 403){
-                die();
-            }
+    //Execute and display errors
+    $shouldReUpdate = batchExecute($batch);
+
+    //Batch update again, if necessary
+    if($shouldReUpdate){
+        $batch = new Google_Http_Batch($client);
+        foreach($events as $event){
+            $batch->add($service->events->update(CALENDAR_ID, $event['id'], $event));
         }
+        batchExecute($batch);
     }
 
     sleep(5);
 }
+
+file_put_contents('log.txt', date('Ymd-his') .  ' completed in ' . round(microtime(true)-$ts) . "s\n", FILE_APPEND);

@@ -21,6 +21,10 @@ function getClient() {
     $client->setAccessType('offline');
     $client->setApprovalPrompt('force');
 
+    //Use our own Guzzle client to remove SSL verification
+    $guzzleClient = new \GuzzleHttp\Client(array( 'curl' => array( CURLOPT_SSL_VERIFYPEER => false, ), ));
+    $client->setHttpClient($guzzleClient);
+
     // Load previously authorized credentials from a file.
     $credentialsPath = expandHomeDirectory(CREDENTIALS_PATH);
     if (file_exists($credentialsPath)) {
