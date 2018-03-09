@@ -130,7 +130,7 @@ $allVideos = collect(getJson('videos', $urlVideos)['videos'])->groupBy('game')->
 //Run for all Leagues
 $ignoreOlderThandMonthes = 1;
 $idLeagueStart = 1;
-$idLeagueEnd = 50;
+$idLeagueEnd = 60;
 for($idLeague=$idLeagueStart; $idLeague<=$idLeagueEnd; $idLeague++){
     //Get files
     $dataLeague = getJson("league$idLeague", sprintf($urlLeague, $idLeague));
